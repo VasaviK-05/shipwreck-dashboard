@@ -1,76 +1,160 @@
 from flask import Flask, jsonify, render_template, request
-import pymonetdb
+import json
+import math
+from pathlib import Path
 
 app = Flask(__name__)
 
-def get_conn():
-    return pymonetdb.connect(
-        username="monetdb",
-        password="monetdb",
-        hostname="localhost",
-        database="shipwrecksdb"
-    )
+DATA_FILE = Path(__file__).parent / "shipwrecks.json"
 
-def apply_filters(base_query, args):
-    filters = []
-    params = []
 
-    search = args.get("search", "").strip()
+def unwrap_value(value):
+    if isinstance(value, dict):
+        if "$numberDouble" in value:
+            try:
+                return float(value["$numberDouble"])
+            except (ValueError, TypeError):
+                return None
+        if "$oid" in value:
+            return value["$oid"]
+    return value
+
+
+def to_bool(value):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"true", "1", "yes", "y"}
+
+
+def to_float(value):
+    value = unwrap_value(value)
+    if value in (None, "", "null"):
+        return None
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def normalize_record(row, index):
+    feature_type = str(row.get("feature_type") or "").strip()
+    chart_name = str(row.get("chart") or "").strip()
+    water_level = str(row.get("watlev") or "").strip()
+    history = str(row.get("history") or "").strip()
+    quasou = str(row.get("quasou") or "").strip()
+
+    depth = to_float(row.get("depth"))
+    latitude = to_float(row.get("latdec"))
+    longitude = to_float(row.get("londec"))
+
+    # Build consistent booleans for frontend
+    dangerous = "danger" in feature_type.lower()
+    visible = "visible" in feature_type.lower()
+
+    # Prefer recid if present, otherwise use line index
+    raw_wreck_id = row.get("recid")
+    if raw_wreck_id in (None, ""):
+        wreck_id = index + 1
+    else:
+        try:
+            wreck_id = int(raw_wreck_id)
+        except (ValueError, TypeError):
+            wreck_id = index + 1
+
+    return {
+        "wreck_id": wreck_id,
+        "category_name": feature_type if feature_type else "Unknown",
+        "water_level": water_level if water_level else None,
+        "chart_name": chart_name if chart_name else None,
+        "latitude": latitude,
+        "longitude": longitude,
+        "depth": depth,
+        "history": history if history else None,
+        "quasou": quasou if quasou else None,
+        "dangerous": dangerous,
+        "visible": visible,
+    }
+
+
+def load_data():
+    records = []
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
+        for index, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                records.append(normalize_record(obj, index))
+            except json.JSONDecodeError:
+                continue
+    return records
+
+
+def matches_filters(row, args):
+    search = args.get("search", "").strip().lower()
     category = args.get("category", "").strip()
     water_level = args.get("water_level", "").strip()
     chart_name = args.get("chart_name", "").strip()
-    dangerous = args.get("dangerous", "").strip()
-    visible = args.get("visible", "").strip()
-    missing_depth = args.get("missing_depth", "").strip()
+    dangerous = args.get("dangerous", "").strip().lower()
+    visible = args.get("visible", "").strip().lower()
+    missing_depth = args.get("missing_depth", "").strip().lower()
     min_depth = args.get("min_depth", "").strip()
     max_depth = args.get("max_depth", "").strip()
 
     if search:
-        filters.append("""
-            (
-                LOWER(COALESCE(category_name, '')) LIKE %s OR
-                LOWER(COALESCE(water_level, '')) LIKE %s OR
-                LOWER(COALESCE(chart_name, '')) LIKE %s OR
-                LOWER(COALESCE(history, '')) LIKE %s OR
-                LOWER(COALESCE(quasou, '')) LIKE %s
-            )
-        """)
-        value = f"%{search.lower()}%"
-        params.extend([value, value, value, value, value])
+        haystack = " ".join([
+            str(row.get("category_name") or ""),
+            str(row.get("water_level") or ""),
+            str(row.get("chart_name") or ""),
+            str(row.get("history") or ""),
+            str(row.get("quasou") or "")
+        ]).lower()
+        if search not in haystack:
+            return False
 
-    if category:
-        filters.append("category_name = %s")
-        params.append(category)
+    if category and (row.get("category_name") or "") != category:
+        return False
 
-    if water_level:
-        filters.append("water_level = %s")
-        params.append(water_level)
+    if water_level and (row.get("water_level") or "") != water_level:
+        return False
 
-    if chart_name:
-        filters.append("chart_name = %s")
-        params.append(chart_name)
+    if chart_name and (row.get("chart_name") or "") != chart_name:
+        return False
 
-    if dangerous == "true":
-        filters.append("dangerous = TRUE")
+    if dangerous == "true" and not row.get("dangerous", False):
+        return False
 
-    if visible == "true":
-        filters.append("visible = TRUE")
+    if visible == "true" and not row.get("visible", False):
+        return False
 
-    if missing_depth == "true":
-        filters.append("depth IS NULL")
+    depth = row.get("depth")
+
+    if missing_depth == "true" and depth is not None:
+        return False
 
     if min_depth:
-        filters.append("depth >= %s")
-        params.append(float(min_depth))
+        try:
+            if depth is None or depth < float(min_depth):
+                return False
+        except ValueError:
+            pass
 
     if max_depth:
-        filters.append("depth <= %s")
-        params.append(float(max_depth))
+        try:
+            if depth is None or depth > float(max_depth):
+                return False
+        except ValueError:
+            pass
 
-    if filters:
-        base_query += " WHERE " + " AND ".join(filters)
+    return True
 
-    return base_query, params
+
+def filtered_data(args):
+    data = load_data()
+    return [row for row in data if matches_filters(row, args)]
 
 
 @app.route("/")
@@ -80,21 +164,11 @@ def index():
 
 @app.route("/api/filter-options")
 def filter_options():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SET SCHEMA maritime")
+    data = load_data()
 
-    cur.execute("SELECT DISTINCT category_name FROM wrecks WHERE category_name IS NOT NULL ORDER BY category_name")
-    categories = [row[0] for row in cur.fetchall()]
-
-    cur.execute("SELECT DISTINCT water_level FROM wrecks WHERE water_level IS NOT NULL ORDER BY water_level")
-    water_levels = [row[0] for row in cur.fetchall()]
-
-    cur.execute("SELECT DISTINCT chart_name FROM wrecks WHERE chart_name IS NOT NULL ORDER BY chart_name")
-    charts = [row[0] for row in cur.fetchall()]
-
-    cur.close()
-    conn.close()
+    categories = sorted({r["category_name"] for r in data if r.get("category_name")})
+    water_levels = sorted({r["water_level"] for r in data if r.get("water_level")})
+    charts = sorted({r["chart_name"] for r in data if r.get("chart_name")})
 
     return jsonify({
         "categories": categories,
@@ -105,64 +179,23 @@ def filter_options():
 
 @app.route("/api/stats")
 def stats():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SET SCHEMA maritime")
+    data = filtered_data(request.args)
 
-    stats_base = "SELECT COUNT(*) FROM wrecks"
-    stats_base, stats_params = apply_filters(stats_base, request.args)
-    cur.execute(stats_base, stats_params)
-    total_wrecks = cur.fetchone()[0]
+    total_wrecks = len(data)
+    dangerous_wrecks = sum(1 for r in data if r.get("dangerous"))
+    visible_wrecks = sum(1 for r in data if r.get("visible"))
 
-    dangerous_query = "SELECT COUNT(*) FROM wrecks"
-    dangerous_query, dangerous_params = apply_filters(dangerous_query, request.args)
-    if " WHERE " in dangerous_query:
-        dangerous_query += " AND dangerous = TRUE"
-    else:
-        dangerous_query += " WHERE dangerous = TRUE"
-    cur.execute(dangerous_query, dangerous_params)
-    dangerous_wrecks = cur.fetchone()[0]
+    depths = [r["depth"] for r in data if r.get("depth") is not None]
+    avg_depth = round(sum(depths) / len(depths), 2) if depths else None
 
-    visible_query = "SELECT COUNT(*) FROM wrecks"
-    visible_query, visible_params = apply_filters(visible_query, request.args)
-    if " WHERE " in visible_query:
-        visible_query += " AND visible = TRUE"
-    else:
-        visible_query += " WHERE visible = TRUE"
-    cur.execute(visible_query, visible_params)
-    visible_wrecks = cur.fetchone()[0]
-
-    avg_query = "SELECT AVG(depth) FROM wrecks"
-    avg_query, avg_params = apply_filters(avg_query, request.args)
-    if " WHERE " in avg_query:
-        avg_query += " AND depth IS NOT NULL"
-    else:
-        avg_query += " WHERE depth IS NOT NULL"
-    cur.execute(avg_query, avg_params)
-    avg_depth = cur.fetchone()[0]
-
-    missing_depth_query = "SELECT COUNT(*) FROM wrecks"
-    missing_depth_query, missing_depth_params = apply_filters(missing_depth_query, request.args)
-    if " WHERE " in missing_depth_query:
-        missing_depth_query += " AND depth IS NULL"
-    else:
-        missing_depth_query += " WHERE depth IS NULL"
-    cur.execute(missing_depth_query, missing_depth_params)
-    missing_depth_count = cur.fetchone()[0]
-
-    water_types_query = "SELECT COUNT(DISTINCT water_level) FROM wrecks"
-    water_types_query, water_types_params = apply_filters(water_types_query, request.args)
-    cur.execute(water_types_query, water_types_params)
-    water_level_types = cur.fetchone()[0]
-
-    cur.close()
-    conn.close()
+    missing_depth_count = sum(1 for r in data if r.get("depth") is None)
+    water_level_types = len({r["water_level"] for r in data if r.get("water_level")})
 
     return jsonify({
         "total_wrecks": total_wrecks,
         "dangerous_wrecks": dangerous_wrecks,
         "visible_wrecks": visible_wrecks,
-        "avg_depth": round(avg_depth, 2) if avg_depth is not None else None,
+        "avg_depth": avg_depth,
         "missing_depth_count": missing_depth_count,
         "water_level_types": water_level_types
     })
@@ -170,196 +203,122 @@ def stats():
 
 @app.route("/api/category-counts")
 def category_counts():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SET SCHEMA maritime")
+    data = filtered_data(request.args)
+    counts = {}
 
-    query = """
-        SELECT category_name, COUNT(*)
-        FROM wrecks
-    """
-    query, params = apply_filters(query, request.args)
-    query += " GROUP BY category_name ORDER BY COUNT(*) DESC"
+    for r in data:
+        key = r.get("category_name") or "Unknown"
+        counts[key] = counts.get(key, 0) + 1
 
-    cur.execute(query, params)
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    return jsonify([{"category": r[0], "count": r[1]} for r in rows])
+    result = [
+        {"category": k, "count": v}
+        for k, v in sorted(counts.items(), key=lambda x: x[1], reverse=True)
+    ]
+    return jsonify(result)
 
 
 @app.route("/api/water-level-counts")
 def water_level_counts():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SET SCHEMA maritime")
+    data = filtered_data(request.args)
+    counts = {}
 
-    query = """
-        SELECT water_level, COUNT(*)
-        FROM wrecks
-    """
-    query, params = apply_filters(query, request.args)
-    query += " GROUP BY water_level ORDER BY COUNT(*) DESC"
+    for r in data:
+        key = r.get("water_level") or "Unknown"
+        counts[key] = counts.get(key, 0) + 1
 
-    cur.execute(query, params)
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    return jsonify([{"water_level": r[0], "count": r[1]} for r in rows])
+    result = [
+        {"water_level": k, "count": v}
+        for k, v in sorted(counts.items(), key=lambda x: x[1], reverse=True)
+    ]
+    return jsonify(result)
 
 
 @app.route("/api/depth-bands")
 def depth_bands():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SET SCHEMA maritime")
+    data = filtered_data(request.args)
+    counts = {
+        "Unknown": 0,
+        "0-5 m": 0,
+        "5-15 m": 0,
+        "15-30 m": 0,
+        "30+ m": 0
+    }
 
-    inner_query = """
-        SELECT
-            CASE
-                WHEN depth IS NULL THEN 'Unknown'
-                WHEN depth < 5 THEN '0-5 m'
-                WHEN depth < 15 THEN '5-15 m'
-                WHEN depth < 30 THEN '15-30 m'
-                ELSE '30+ m'
-            END AS band
-        FROM wrecks
-    """
-    inner_query, params = apply_filters(inner_query, request.args)
+    for r in data:
+        depth = r.get("depth")
+        if depth is None:
+            counts["Unknown"] += 1
+        elif depth < 5:
+            counts["0-5 m"] += 1
+        elif depth < 15:
+            counts["5-15 m"] += 1
+        elif depth < 30:
+            counts["15-30 m"] += 1
+        else:
+            counts["30+ m"] += 1
 
-    outer_query = f"""
-        SELECT band, COUNT(*) AS total
-        FROM ({inner_query}) AS depth_data
-        GROUP BY band
-        ORDER BY total DESC
-    """
-
-    cur.execute(outer_query, params)
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    return jsonify([{"band": r[0], "count": r[1]} for r in rows])
+    result = [
+        {"band": k, "count": v}
+        for k, v in sorted(counts.items(), key=lambda x: x[1], reverse=True)
+    ]
+    return jsonify(result)
 
 
 @app.route("/api/records")
 def records():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SET SCHEMA maritime")
+    data = filtered_data(request.args)
 
-    page = int(request.args.get("page", 1))
-    per_page = int(request.args.get("per_page", 100))
+    try:
+        page = int(request.args.get("page", 1))
+    except ValueError:
+        page = 1
+
+    try:
+        per_page = int(request.args.get("per_page", 100))
+    except ValueError:
+        per_page = 100
+
     if per_page > 500:
         per_page = 500
+    if page < 1:
+        page = 1
 
-    offset = (page - 1) * per_page
+    data = sorted(data, key=lambda r: (r.get("wreck_id") is None, r.get("wreck_id")))
+    total_count = len(data)
+    total_pages = math.ceil(total_count / per_page) if per_page else 1
 
-    base_query = """
-        SELECT wreck_id, category_name, water_level, chart_name,
-               latitude, longitude, depth, history, quasou, dangerous, visible
-        FROM wrecks
-    """
-
-    count_query = "SELECT COUNT(*) FROM wrecks"
-
-    filtered_query, params = apply_filters(base_query, request.args)
-    filtered_count_query, count_params = apply_filters(count_query, request.args)
-
-    filtered_query += " ORDER BY wreck_id LIMIT %s OFFSET %s"
-    params.extend([per_page, offset])
-
-    cur.execute(filtered_count_query, count_params)
-    total_count = cur.fetchone()[0]
-
-    cur.execute(filtered_query, params)
-    rows = cur.fetchall()
-
-    cur.close()
-    conn.close()
+    start = (page - 1) * per_page
+    end = start + per_page
+    records_page = data[start:end]
 
     return jsonify({
         "page": page,
         "per_page": per_page,
         "total_count": total_count,
-        "total_pages": (total_count + per_page - 1) // per_page,
-        "records": [
-            {
-                "wreck_id": r[0],
-                "category_name": r[1],
-                "water_level": r[2],
-                "chart_name": r[3],
-                "latitude": r[4],
-                "longitude": r[5],
-                "depth": r[6],
-                "history": r[7],
-                "quasou": r[8],
-                "dangerous": r[9],
-                "visible": r[10]
-            }
-            for r in rows
-        ]
+        "total_pages": total_pages,
+        "records": records_page
     })
 
 
 @app.route("/api/record/<int:wreck_id>")
 def record_detail(wreck_id):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SET SCHEMA maritime")
-    cur.execute("""
-        SELECT wreck_id, category_name, water_level, chart_name,
-               latitude, longitude, depth, history, quasou, dangerous, visible
-        FROM wrecks
-        WHERE wreck_id = %s
-    """, (wreck_id,))
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
+    data = load_data()
 
-    if not row:
-        return jsonify({"error": "Record not found"}), 404
+    for row in data:
+        if row.get("wreck_id") == wreck_id:
+            return jsonify(row)
 
-    return jsonify({
-        "wreck_id": row[0],
-        "category_name": row[1],
-        "water_level": row[2],
-        "chart_name": row[3],
-        "latitude": row[4],
-        "longitude": row[5],
-        "depth": row[6],
-        "history": row[7],
-        "quasou": row[8],
-        "dangerous": row[9],
-        "visible": row[10]
-    })
+    return jsonify({"error": "Record not found"}), 404
 
 
 @app.route("/api/data-quality")
 def data_quality():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SET SCHEMA maritime")
+    data = filtered_data(request.args)
 
-    base = "FROM wrecks"
-    base, params = apply_filters(base, request.args)
-
-    cur.execute(f"SELECT COUNT(*) {base} AND depth IS NULL" if " WHERE " in base else f"SELECT COUNT(*) {base} WHERE depth IS NULL", params)
-    missing_depth = cur.fetchone()[0]
-
-    cur.execute(f"SELECT COUNT(*) {base} AND (history IS NULL OR history = '')" if " WHERE " in base else f"SELECT COUNT(*) {base} WHERE (history IS NULL OR history = '')", params)
-    missing_history = cur.fetchone()[0]
-
-    cur.execute(f"SELECT COUNT(*) {base} AND (quasou IS NULL OR quasou = '')" if " WHERE " in base else f"SELECT COUNT(*) {base} WHERE (quasou IS NULL OR quasou = '')", params)
-    missing_quasou = cur.fetchone()[0]
-
-    cur.execute(f"SELECT COUNT(*) {base} AND (chart_name IS NULL OR chart_name = '')" if " WHERE " in base else f"SELECT COUNT(*) {base} WHERE (chart_name IS NULL OR chart_name = '')", params)
-    missing_chart = cur.fetchone()[0]
-
-    cur.close()
-    conn.close()
+    missing_depth = sum(1 for r in data if r.get("depth") is None)
+    missing_history = sum(1 for r in data if not (r.get("history") or "").strip())
+    missing_quasou = sum(1 for r in data if not (r.get("quasou") or "").strip())
+    missing_chart = sum(1 for r in data if not (r.get("chart_name") or "").strip())
 
     return jsonify({
         "missing_depth": missing_depth,
