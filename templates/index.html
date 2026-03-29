@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Maritime Hazard Analytics Dashboard</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <div id="loaderOverlay">
+    <div class="loader-scene">
+      <div class="loader-title">Loading Maritime Dashboard...</div>
+      <div class="sea">
+        <div class="wave wave1"></div>
+        <div class="wave wave2"></div>
+        <div class="ship-wrap">
+          <div class="ship">
+            <div class="ship-body"></div>
+            <div class="ship-cabin"></div>
+            <div class="ship-mast"></div>
+          </div>
+        </div>
+      </div>
+      <div class="progress-shell">
+        <div id="progressBar"></div>
+      </div>
+      <div class="loader-note">Preparing wreck records, charts, and filters...</div>
+    </div>
+  </div>
+
+  <div class="storm-bg">
+    <div class="bg-wave bg-wave-1"></div>
+    <div class="bg-wave bg-wave-2"></div>
+    <div class="bg-wave bg-wave-3"></div>
+  </div>
+
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand-box">
+        <h1 class="brand">OceanScope</h1>
+        <p class="brand-sub">Maritime Hazard Analytics</p>
+      </div>
+
+      <nav class="nav-links">
+        <button class="nav-btn active" data-view="overviewView">Overview</button>
+        <button class="nav-btn" data-view="hazardView">Hazard Insights</button>
+        <button class="nav-btn" data-view="recordsView">Records</button>
+        <button class="nav-btn" data-view="qualityView">Data Quality</button>
+      </nav>
+
+      <div class="filter-panel">
+        <h3>Interactive Record Explorer</h3>
+
+        <label>Search</label>
+        <input type="text" id="searchInput" placeholder="Search category, chart, history...">
+
+        <label>Category</label>
+        <select id="categoryFilter">
+          <option value="">All</option>
+        </select>
+
+        <label>Water Level</label>
+        <select id="waterLevelFilter">
+          <option value="">All</option>
+        </select>
+
+        <label>Chart Source</label>
+        <select id="chartFilter">
+          <option value="">All</option>
+        </select>
+
+        <div class="checkbox-row">
+          <label><input type="checkbox" id="dangerousOnly"> Dangerous only</label>
+          <label><input type="checkbox" id="visibleOnly"> Visible only</label>
+          <label><input type="checkbox" id="missingDepthOnly"> Missing depth only</label>
+        </div>
+
+        <div class="depth-grid">
+          <div>
+            <label>Min depth</label>
+            <input type="number" id="minDepth" placeholder="0">
+          </div>
+          <div>
+            <label>Max depth</label>
+            <input type="number" id="maxDepth" placeholder="20">
+          </div>
+        </div>
+
+        <div class="button-row">
+          <button id="applyFiltersBtn">Apply</button>
+          <button id="resetFiltersBtn" class="secondary">Reset</button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <div>
+          <h2 id="pageTitle">Overview</h2>
+          <p id="pageSubtitle">Dark ocean analytics view of maritime hazard records</p>
+        </div>
+        <div class="topbar-actions">
+          <button id="refreshBtn">Refresh</button>
+          <button id="exportBtn" class="secondary">Export CSV</button>
+        </div>
+      </header>
+
+      <section id="overviewView" class="view-page active-view">
+        <section class="hero-panel">
+          <div class="hero-copy">
+            <div class="hero-tag">Live Maritime Intelligence</div>
+            <h1>Tracking Wreck Hazards Beneath the Surface</h1>
+            <p>
+              Explore wreck visibility, dangerous submerged zones, depth conditions,
+              and data quality across the maritime dataset loaded into MonetDB.
+            </p>
+          </div>
+
+          <div class="hero-visual">
+            <div class="hero-sea">
+              <div class="hero-wave hero-wave-1"></div>
+              <div class="hero-wave hero-wave-2"></div>
+              <div class="hero-ship-wrap">
+                <div class="hero-ship">
+                  <div class="hero-ship-body"></div>
+                  <div class="hero-ship-cabin"></div>
+                  <div class="hero-ship-mast"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="kpi-grid">
+          <div class="kpi-card"><span>Total Records</span><h3 id="totalWrecks">--</h3></div>
+          <div class="kpi-card danger-card"><span>Dangerous Wrecks</span><h3 id="dangerousWrecks">--</h3></div>
+          <div class="kpi-card"><span>Visible Wrecks</span><h3 id="visibleWrecks">--</h3></div>
+          <div class="kpi-card"><span>Average Known Depth</span><h3 id="avgDepth">--</h3></div>
+          <div class="kpi-card"><span>Water Level Types</span><h3 id="waterTypes">--</h3></div>
+          <div class="kpi-card warning-card"><span>Missing Depth Records</span><h3 id="missingDepthCount">--</h3></div>
+        </section>
+      </section>
+
+      <section id="hazardView" class="view-page">
+        <div class="single-page-grid">
+          <div class="panel">
+            <h3>Hazard Summary</h3>
+            <div class="hazard-count-box">
+              <span>Dangerous Wrecks</span>
+              <h1 id="hazardCountOnly">--</h1>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h3>Wrecks by Category</h3>
+            <canvas id="categoryChart"></canvas>
+          </div>
+
+          <div class="panel">
+            <h3>Wrecks by Water Level</h3>
+            <canvas id="waterChart"></canvas>
+          </div>
+
+          <div class="panel">
+            <h3>Depth Bands</h3>
+            <canvas id="depthChart"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <section id="recordsView" class="view-page">
+        <div class="panel table-panel">
+          <div class="panel-header">
+            <h3>Filtered Records</h3>
+            <span id="recordCountLabel">Showing records...</span>
+          </div>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Category</th>
+                  <th>Water Level</th>
+                  <th>Depth</th>
+                  <th>Latitude</th>
+                  <th>Longitude</th>
+                  <th>Dangerous</th>
+                  <th>Visible</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="recordsTableBody"></tbody>
+            </table>
+          </div>
+
+          <div id="paginationControls" class="pagination-controls"></div>
+        </div>
+      </section>
+
+      <section id="qualityView" class="view-page">
+        <div class="single-page-grid">
+          <div class="panel">
+            <h3>Data Quality Overview</h3>
+            <div class="quality-box">
+              <div class="quality-item"><span>Missing Depth</span><strong id="qMissingDepth">--</strong></div>
+              <div class="quality-item"><span>Missing History</span><strong id="qMissingHistory">--</strong></div>
+              <div class="quality-item"><span>Missing Quasou</span><strong id="qMissingQuasou">--</strong></div>
+              <div class="quality-item"><span>Missing Chart</span><strong id="qMissingChart">--</strong></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h3>Project Notes</h3>
+            <p>
+              This dashboard is built from a semi-structured shipwreck JSON dataset transformed
+              into a relational MonetDB schema. It supports live filtering, hazard summaries,
+              records exploration, and data quality inspection.
+            </p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="detailDrawer" class="detail-drawer">
+    <div class="drawer-header">
+      <h3>Record Details</h3>
+      <button id="closeDrawer">✕</button>
+    </div>
+    <div id="drawerContent" class="drawer-content"></div>
+  </div>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
