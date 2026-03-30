@@ -1,351 +1,226 @@
-let categoryChartInstance = null;
-let waterChartInstance = null;
-let depthChartInstance = null;
+let categoryChart;
+let dangerChart;
+
 let currentPage = 1;
-let perPage = 100;
+const limit = 100;
+let totalRecords = 0;
 
-function buildQueryParams() {
-  const params = new URLSearchParams();
+async function loadOverview() {
+    const res = await fetch('/api/overview');
+    const data = await res.json();
 
-  const search = document.getElementById("searchInput").value.trim();
-  const category = document.getElementById("categoryFilter").value;
-  const waterLevel = document.getElementById("waterLevelFilter").value;
-  const chartName = document.getElementById("chartFilter").value;
-  const dangerous = document.getElementById("dangerousOnly").checked;
-  const visible = document.getElementById("visibleOnly").checked;
-  const missingDepth = document.getElementById("missingDepthOnly").checked;
-  const minDepth = document.getElementById("minDepth").value;
-  const maxDepth = document.getElementById("maxDepth").value;
-
-  if (search) params.append("search", search);
-  if (category) params.append("category", category);
-  if (waterLevel) params.append("water_level", waterLevel);
-  if (chartName) params.append("chart_name", chartName);
-  if (dangerous) params.append("dangerous", "true");
-  if (visible) params.append("visible", "true");
-  if (missingDepth) params.append("missing_depth", "true");
-  if (minDepth) params.append("min_depth", minDepth);
-  if (maxDepth) params.append("max_depth", maxDepth);
-
-  return params.toString();
+    document.getElementById('totalWrecks').textContent = data.total_wrecks;
+    document.getElementById('dangerousWrecks').textContent = data.dangerous_wrecks;
+    document.getElementById('visibleWrecks').textContent = data.visible_wrecks;
+    document.getElementById('avgDepth').textContent = data.avg_depth;
+    document.getElementById('overviewQueryTime').textContent =
+        `Overview query time: ${data.query_time_ms} ms`;
 }
 
-function switchView(viewId) {
-  document.querySelectorAll(".view-page").forEach(section => {
-    section.classList.remove("active-view");
-  });
-  document.getElementById(viewId).classList.add("active-view");
+async function loadCategoryFilter() {
+    const res = await fetch('/api/categories-list');
+    const categories = await res.json();
 
-  document.querySelectorAll(".nav-btn").forEach(btn => {
-    btn.classList.remove("active");
-  });
-  document.querySelector(`.nav-btn[data-view="${viewId}"]`).classList.add("active");
+    const select = document.getElementById('categoryFilter');
+    select.innerHTML = '<option value="">All Categories</option>';
 
-  const titleMap = {
-    overviewView: ["Overview", "Dark ocean analytics view of maritime hazard records"],
-    hazardView: ["Hazard Insights", "Focused hazard counts and grouped analytical views"],
-    recordsView: ["Records", "Explore filtered records with pagination and drill-down"],
-    qualityView: ["Data Quality", "Inspect missing data and structural completeness"]
-  };
-
-  document.getElementById("pageTitle").textContent = titleMap[viewId][0];
-  document.getElementById("pageSubtitle").textContent = titleMap[viewId][1];
-}
-
-async function loadFilterOptions() {
-  const res = await fetch("/api/filter-options");
-  const data = await res.json();
-
-  const categoryFilter = document.getElementById("categoryFilter");
-  const waterLevelFilter = document.getElementById("waterLevelFilter");
-  const chartFilter = document.getElementById("chartFilter");
-
-  categoryFilter.innerHTML = `<option value="">All</option>`;
-  waterLevelFilter.innerHTML = `<option value="">All</option>`;
-  chartFilter.innerHTML = `<option value="">All</option>`;
-
-  data.categories.forEach(item => {
-    const option = document.createElement("option");
-    option.value = item;
-    option.textContent = item;
-    categoryFilter.appendChild(option);
-  });
-
-  data.water_levels.forEach(item => {
-    const option = document.createElement("option");
-    option.value = item;
-    option.textContent = item;
-    waterLevelFilter.appendChild(option);
-  });
-
-  data.charts.forEach(item => {
-    const option = document.createElement("option");
-    option.value = item;
-    option.textContent = item;
-    chartFilter.appendChild(option);
-  });
-}
-
-async function loadStats() {
-  const params = buildQueryParams();
-  const res = await fetch(`/api/stats?${params}`);
-  const data = await res.json();
-
-  document.getElementById("totalWrecks").textContent = data.total_wrecks;
-  document.getElementById("dangerousWrecks").textContent = data.dangerous_wrecks;
-  document.getElementById("visibleWrecks").textContent = data.visible_wrecks;
-  document.getElementById("avgDepth").textContent = data.avg_depth ?? "N/A";
-  document.getElementById("waterTypes").textContent = data.water_level_types;
-  document.getElementById("missingDepthCount").textContent = data.missing_depth_count;
-  document.getElementById("hazardCountOnly").textContent = data.dangerous_wrecks;
+    categories.forEach(cat => {
+        const option = document.createElement('option');
+        option.value = cat;
+        option.textContent = cat;
+        select.appendChild(option);
+    });
 }
 
 async function loadCategoryChart() {
-  const params = buildQueryParams();
-  const res = await fetch(`/api/category-counts?${params}`);
-  const data = await res.json();
+    const res = await fetch('/api/categories');
+    const result = await res.json();
 
-  if (categoryChartInstance) categoryChartInstance.destroy();
+    document.getElementById('categoryQueryTime').textContent =
+        `${result.query_time_ms} ms`;
 
-  categoryChartInstance = new Chart(document.getElementById("categoryChart"), {
-    type: "bar",
-    data: {
-      labels: data.map(x => x.category),
-      datasets: [{
-        label: "Count",
-        data: data.map(x => x.count)
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { labels: { color: "#edf7ff" } }
-      },
-      scales: {
-        x: { ticks: { color: "#edf7ff" }, grid: { color: "rgba(255,255,255,0.08)" } },
-        y: { ticks: { color: "#edf7ff" }, grid: { color: "rgba(255,255,255,0.08)" } }
-      }
+    const labels = result.data.map(item => item.category || 'Unknown');
+    const counts = result.data.map(item => item.count);
+
+    const ctx = document.getElementById('categoryChart').getContext('2d');
+
+    if (categoryChart) {
+        categoryChart.destroy();
     }
-  });
-}
 
-async function loadWaterChart() {
-  const params = buildQueryParams();
-  const res = await fetch(`/api/water-level-counts?${params}`);
-  const data = await res.json();
-
-  if (waterChartInstance) waterChartInstance.destroy();
-
-  waterChartInstance = new Chart(document.getElementById("waterChart"), {
-    type: "pie",
-    data: {
-      labels: data.map(x => x.water_level),
-      datasets: [{
-        data: data.map(x => x.count)
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { labels: { color: "#edf7ff" } }
-      }
-    }
-  });
-}
-
-async function loadDepthChart() {
-  const params = buildQueryParams();
-  const res = await fetch(`/api/depth-bands?${params}`);
-  const data = await res.json();
-
-  if (depthChartInstance) depthChartInstance.destroy();
-
-  depthChartInstance = new Chart(document.getElementById("depthChart"), {
-    type: "doughnut",
-    data: {
-      labels: data.map(x => x.band),
-      datasets: [{
-        data: data.map(x => x.count)
-      }]
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { labels: { color: "#edf7ff" } }
-      }
-    }
-  });
-}
-
-async function loadQuality() {
-  const params = buildQueryParams();
-  const res = await fetch(`/api/data-quality?${params}`);
-  const data = await res.json();
-
-  document.getElementById("qMissingDepth").textContent = data.missing_depth;
-  document.getElementById("qMissingHistory").textContent = data.missing_history;
-  document.getElementById("qMissingQuasou").textContent = data.missing_quasou;
-  document.getElementById("qMissingChart").textContent = data.missing_chart;
-}
-
-async function loadRecords(page = 1) {
-  currentPage = page;
-  const params = buildQueryParams();
-  const res = await fetch(`/api/records?${params}&page=${page}&per_page=${perPage}`);
-  const payload = await res.json();
-
-  const data = payload.records;
-  const tbody = document.getElementById("recordsTableBody");
-  const countLabel = document.getElementById("recordCountLabel");
-
-  tbody.innerHTML = "";
-  countLabel.textContent = `Showing page ${payload.page} of ${payload.total_pages} | Total matching records: ${payload.total_count}`;
-
-  data.forEach(row => {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${row.wreck_id}</td>
-      <td>${row.category_name ?? "N/A"}</td>
-      <td>${row.water_level ?? "N/A"}</td>
-      <td>${row.depth ?? "N/A"}</td>
-      <td>${row.latitude ?? "N/A"}</td>
-      <td>${row.longitude ?? "N/A"}</td>
-      <td>${row.dangerous ? "Yes" : "No"}</td>
-      <td>${row.visible ? "Yes" : "No"}</td>
-      <td><button class="secondary detail-btn" data-id="${row.wreck_id}">View</button></td>
-    `;
-    tbody.appendChild(tr);
-  });
-
-  document.querySelectorAll(".detail-btn").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const id = btn.dataset.id;
-      await openDrawer(id);
+    categoryChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'Wreck Count',
+                data: counts
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {
+                    labels: {
+                        color: '#ffffff'
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    ticks: {
+                        color: '#ffffff'
+                    }
+                },
+                y: {
+                    ticks: {
+                        color: '#ffffff'
+                    }
+                }
+            }
+        }
     });
-  });
-
-  renderPagination(payload.page, payload.total_pages);
 }
 
-function renderPagination(page, totalPages) {
-  const pagination = document.getElementById("paginationControls");
-  pagination.innerHTML = `
-    <button ${page <= 1 ? "disabled" : ""} id="prevPageBtn">Previous</button>
-    <span>Page ${page} of ${totalPages}</span>
-    <button ${page >= totalPages ? "disabled" : ""} id="nextPageBtn">Next</button>
-  `;
+async function loadDangerChart() {
+    const res = await fetch('/api/danger-status');
+    const result = await res.json();
 
-  const prevBtn = document.getElementById("prevPageBtn");
-  const nextBtn = document.getElementById("nextPageBtn");
+    document.getElementById('dangerQueryTime').textContent =
+        `${result.query_time_ms} ms`;
 
-  if (prevBtn) prevBtn.addEventListener("click", () => loadRecords(page - 1));
-  if (nextBtn) nextBtn.addEventListener("click", () => loadRecords(page + 1));
-}
+    const labels = result.data.map(item =>
+        item.dangerous === 'True' || item.dangerous === 'true' ? 'Dangerous' : 'Safe'
+    );
+    const counts = result.data.map(item => item.count);
 
-async function openDrawer(id) {
-  const res = await fetch(`/api/record/${id}`);
-  const data = await res.json();
+    const ctx = document.getElementById('dangerChart').getContext('2d');
 
-  const content = document.getElementById("drawerContent");
-  content.innerHTML = `
-    <div class="drawer-field"><strong>Wreck ID</strong>${data.wreck_id}</div>
-    <div class="drawer-field"><strong>Category</strong>${data.category_name ?? "N/A"}</div>
-    <div class="drawer-field"><strong>Water Level</strong>${data.water_level ?? "N/A"}</div>
-    <div class="drawer-field"><strong>Chart Source</strong>${data.chart_name ?? "N/A"}</div>
-    <div class="drawer-field"><strong>Latitude</strong>${data.latitude ?? "N/A"}</div>
-    <div class="drawer-field"><strong>Longitude</strong>${data.longitude ?? "N/A"}</div>
-    <div class="drawer-field"><strong>Depth</strong>${data.depth ?? "N/A"}</div>
-    <div class="drawer-field"><strong>Dangerous</strong>${data.dangerous ? "Yes" : "No"}</div>
-    <div class="drawer-field"><strong>Visible</strong>${data.visible ? "Yes" : "No"}</div>
-    <div class="drawer-field"><strong>History</strong>${data.history ?? "N/A"}</div>
-    <div class="drawer-field"><strong>Quasou</strong>${data.quasou ?? "N/A"}</div>
-  `;
-
-  document.getElementById("detailDrawer").classList.add("open");
-}
-
-function resetFilters() {
-  document.getElementById("searchInput").value = "";
-  document.getElementById("categoryFilter").value = "";
-  document.getElementById("waterLevelFilter").value = "";
-  document.getElementById("chartFilter").value = "";
-  document.getElementById("dangerousOnly").checked = false;
-  document.getElementById("visibleOnly").checked = false;
-  document.getElementById("missingDepthOnly").checked = false;
-  document.getElementById("minDepth").value = "";
-  document.getElementById("maxDepth").value = "";
-}
-
-function exportTableToCSV() {
-  const rows = Array.from(document.querySelectorAll("table tr"));
-  const csv = rows.map(row =>
-    Array.from(row.querySelectorAll("th, td"))
-      .slice(0, 8)
-      .map(cell => `"${cell.innerText.replace(/"/g, '""')}"`)
-      .join(",")
-  ).join("\n");
-
-  const blob = new Blob([csv], { type: "text/csv" });
-  const url = window.URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "filtered_records.csv";
-  a.click();
-  window.URL.revokeObjectURL(url);
-}
-
-async function applyAllData() {
-  await loadStats();
-  await loadCategoryChart();
-  await loadWaterChart();
-  await loadDepthChart();
-  await loadQuality();
-  await loadRecords(1);
-}
-
-async function initDashboard() {
-  let progress = 0;
-  const bar = document.getElementById("progressBar");
-  const ship = document.querySelector(".ship");
-
-  const timer = setInterval(() => {
-    progress += 10;
-    if (progress <= 90) {
-      bar.style.width = `${progress}%`;
+    if (dangerChart) {
+        dangerChart.destroy();
     }
-  }, 180);
 
-  await loadFilterOptions();
-  await applyAllData();
-
-  clearInterval(timer);
-  bar.style.width = "100%";
-  ship.classList.add("sink");
-
-  setTimeout(() => {
-    document.getElementById("loaderOverlay").classList.add("hidden");
-  }, 1000);
+    dangerChart = new Chart(ctx, {
+        type: 'pie',
+        data: {
+            labels: labels,
+            datasets: [{
+                label: 'Danger Status',
+                data: counts
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {
+                    labels: {
+                        color: '#ffffff'
+                    }
+                }
+            }
+        }
+    });
 }
 
-document.addEventListener("DOMContentLoaded", () => {
-  document.querySelectorAll(".nav-btn").forEach(btn => {
-    btn.addEventListener("click", () => switchView(btn.dataset.view));
-  });
+async function loadTopDepths() {
+    const res = await fetch('/api/top-depths');
+    const result = await res.json();
 
-  document.getElementById("applyFiltersBtn").addEventListener("click", applyAllData);
-  document.getElementById("resetFiltersBtn").addEventListener("click", async () => {
-    resetFilters();
-    await applyAllData();
-  });
+    document.getElementById('topDepthQueryTime').textContent =
+        `${result.query_time_ms} ms`;
 
-  document.getElementById("refreshBtn").addEventListener("click", applyAllData);
-  document.getElementById("exportBtn").addEventListener("click", exportTableToCSV);
-  document.getElementById("closeDrawer").addEventListener("click", () => {
-    document.getElementById("detailDrawer").classList.remove("open");
-  });
+    const container = document.getElementById('topDepthList');
+    container.innerHTML = '';
 
-  initDashboard();
+    result.data.forEach(item => {
+        const div = document.createElement('div');
+        div.className = 'depth-item';
+        div.innerHTML = `
+            <strong>Wreck ID:</strong> ${item.wreck_id}
+            <span>|</span>
+            <strong>Category:</strong> ${item.category_name || 'Unknown'}
+            <span>|</span>
+            <strong>Depth:</strong> ${item.depth ?? 'N/A'}
+        `;
+        container.appendChild(div);
+    });
+}
+
+async function loadWrecks(page = 1) {
+    const dangerous = document.getElementById('dangerousFilter').value;
+    const visible = document.getElementById('visibleFilter').value;
+    const category = document.getElementById('categoryFilter').value;
+    const search = document.getElementById('searchInput').value.trim();
+
+    const offset = (page - 1) * limit;
+
+    const params = new URLSearchParams({
+        limit: limit,
+        offset: offset
+    });
+
+    if (dangerous) params.append('dangerous', dangerous);
+    if (visible) params.append('visible', visible);
+    if (category) params.append('category', category);
+    if (search) params.append('search', search);
+
+    const res = await fetch(`/api/wrecks?${params.toString()}`);
+    const result = await res.json();
+
+    totalRecords = result.total_count;
+    currentPage = page;
+
+    document.getElementById('tableQueryTime').textContent =
+        `Filtered query time: ${result.query_time_ms} ms`;
+
+    document.getElementById('recordCount').textContent =
+        `Showing ${result.records.length} of ${result.total_count} matching records`;
+
+    document.getElementById('pageInfo').textContent =
+        `Page ${currentPage} of ${Math.max(1, Math.ceil(totalRecords / limit))}`;
+
+    const tbody = document.getElementById('wreckTableBody');
+    tbody.innerHTML = '';
+
+    result.records.forEach(wreck => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td>${wreck.wreck_id}</td>
+            <td>${wreck.category_name ?? ''}</td>
+            <td>${wreck.water_level ?? ''}</td>
+            <td>${wreck.chart_name ?? ''}</td>
+            <td>${wreck.depth ?? ''}</td>
+            <td>${wreck.dangerous}</td>
+            <td>${wreck.visible}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+document.getElementById('applyFilters').addEventListener('click', () => {
+    loadWrecks(1);
 });
+
+document.getElementById('prevPage').addEventListener('click', () => {
+    if (currentPage > 1) {
+        loadWrecks(currentPage - 1);
+    }
+});
+
+document.getElementById('nextPage').addEventListener('click', () => {
+    const totalPages = Math.ceil(totalRecords / limit);
+    if (currentPage < totalPages) {
+        loadWrecks(currentPage + 1);
+    }
+});
+
+async function init() {
+    await loadOverview();
+    await loadCategoryFilter();
+    await loadCategoryChart();
+    await loadDangerChart();
+    await loadTopDepths();
+    await loadWrecks(1);
+}
+
+init();
